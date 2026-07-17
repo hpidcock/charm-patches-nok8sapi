@@ -61,6 +61,26 @@ def patch_postgresql_k8s():
     # ──────────────────────────────────────────────────────────────────────────
     patch_file("src/charm.py", [
 
+        # 0a. Add ConfigError to the lightkube import so it can be caught below.
+        (
+            """from lightkube import ApiError, Client""",
+            """from lightkube import ApiError, Client, ConfigError""",
+        ),
+
+        # 0b. charm_refresh.Kubernetes.__init__ calls lightkube.Client() unconditionally
+        #     and raises ConfigError when no kubeconfig / service-account token exists.
+        #     Treat it like PeerRelationNotReady – disable refresh, keep running.
+        (
+            """        except charm_refresh.PeerRelationNotReady:
+            self.refresh = None
+        except charm_refresh.UnitTearingDown:""",
+            """        except charm_refresh.PeerRelationNotReady:
+            self.refresh = None
+        except ConfigError:
+            self.refresh = None
+        except charm_refresh.UnitTearingDown:""",
+        ),
+
         # 1. fix_leader_annotation
         #    Skip reading/patching Patroni's leader Endpoints object; always
         #    report success so callers continue normally.
