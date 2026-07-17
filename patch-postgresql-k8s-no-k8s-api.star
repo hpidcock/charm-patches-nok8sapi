@@ -472,6 +472,15 @@ else:
                             f"{ep}:5010" for ep in self._endpoints if ep != self._endpoint
                         ),""",
         ),
+        # Add working-dir so Patroni/PostgreSQL start in the postgres user's home
+        # directory, which is required when running outside a proper k8s pod context.
+        (
+            """                    "group": WORKLOAD_OS_GROUP,
+                    "environment": {""",
+            """                    "group": WORKLOAD_OS_GROUP,
+                    "working-dir": "/home/postgres",
+                    "environment": {""",
+        ),
     ])
 
     # ──────────────────────────────────────────────────────────────────────────
