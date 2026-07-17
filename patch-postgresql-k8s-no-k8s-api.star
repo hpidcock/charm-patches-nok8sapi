@@ -39,7 +39,7 @@ def patch_file(path, replacements):
         log("WARNING: expected file not found: " + path)
         return False
 
-    content = charm_read(path).decode("utf-8")
+    content = str(charm_read(path))
     original = content
 
     for old, new in replacements:
