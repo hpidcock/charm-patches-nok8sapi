@@ -6,8 +6,8 @@
 # access (or in environments where the k8s API is unavailable).
 #
 # Files patched:
-#   src/charm.py                     – 9 k8s-using functions
-#   src/backups.py                   – restore-action DCS cleanup
+#   src/charm.py                       – 9 k8s-using functions
+#   src/backups.py                     – restore-action DCS cleanup
 #   src/relations/async_replication.py – standby-cluster DCS cleanup
 #
 # Functional impact:
@@ -29,23 +29,42 @@
 #   * async_replication _remove_previous_cluster_information – old DCS objects
 #     are not deleted when setting up as a standby cluster.
 
-if "postgresql-k8s" not in charm_url:
-    log("skipping: charm_url does not contain 'postgresql-k8s'")
-else:
-    log("applying no-k8s-api patch to " + charm_url)
+def patch_file(path, replacements):
+    """Apply a list of (old, new) replacements to a charm file.
+
+    Returns True if the file was changed and written, False otherwise.
+    Logs a warning if no replacements matched (likely a version mismatch).
+    """
+    if not charm_exists(path):
+        log("WARNING: expected file not found: " + path)
+        return False
+
+    content = charm_read(path).decode("utf-8")
+    original = content
+
+    for old, new in replacements:
+        content = content.replace(old, new, 1)
+
+    if content == original:
+        log("WARNING: no changes made to " + path + " – version mismatch?")
+        return False
+
+    charm_write(path, content)
+    log("patched " + path)
+    return True
+
+def patch_postgresql_k8s():
+    """Remove all lightkube Kubernetes API calls from postgresql-k8s."""
 
     # ──────────────────────────────────────────────────────────────────────────
     # src/charm.py
     # ──────────────────────────────────────────────────────────────────────────
-    _path = "src/charm.py"
-    if charm_exists(_path):
-        _content = charm_read(_path).decode("utf-8")
-        _original = _content
+    patch_file("src/charm.py", [
 
         # 1. fix_leader_annotation
         #    Skip reading/patching Patroni's leader Endpoints object; always
         #    report success so callers continue normally.
-        _content = _content.replace(
+        (
             """        client = Client()
         try:
             endpoint = client.get(Endpoints, name=self.cluster_name, namespace=self._namespace)
@@ -73,12 +92,11 @@ else:
                 raise e
         return True""",
             """        return True""",
-            1,
-        )
+        ),
 
         # 2. _patch_pod_labels
         #    Skip patching Pod labels (used for Service selectors).
-        _content = _content.replace(
+        (
             """        client = Client()
         patch = {
             "metadata": {"labels": {"application": "patroni", "cluster-name": self.cluster_name}}
@@ -90,12 +108,11 @@ else:
             obj=patch,
         )""",
             """        pass  # k8s API removed""",
-            1,
-        )
+        ),
 
         # 3. _check_headless_service
         #    Skip checking for the headless Service; continue without error.
-        _content = _content.replace(
+        (
             """        client = Client()
         svc_name = f"{self.app.name}-endpoints"
         try:
@@ -111,12 +128,11 @@ else:
                 raise RuntimeError from None
             raise""",
             """        pass  # k8s API removed""",
-            1,
-        )
+        ),
 
         # 4. _create_services
         #    Skip creating primary/replicas Services.
-        _content = _content.replace(
+        (
             """        client = Client()
 
         pod0 = client.get(
@@ -170,12 +186,11 @@ else:
                 field_manager=self.model.app.name,
             )""",
             """        pass  # k8s API removed""",
-            1,
-        )
+        ),
 
         # 5. _cleanup_old_cluster_resources
         #    Skip deleting stale Patroni DCS Service/Endpoints objects.
-        _content = _content.replace(
+        (
             """        client = Client()
         for kind, suffix in itertools.product([Service, Endpoints], ["", "-config", "-sync"]):
             try:
@@ -193,14 +208,13 @@ else:
                 if e.status.code != 404:
                     raise e""",
             """        pass  # k8s API removed""",
-            1,
-        )
+        ),
 
         # 6. _on_stop – k8s ownerReference patching section
         #    Skip the entire block that patches Service/Endpoints ownerReferences
         #    when scaling down to zero.  The unit_peer_data.clear() at the top
         #    of the handler is preserved.
-        _content = _content.replace(
+        (
             """
 
         # Patch the services to remove them when the StatefulSet is deleted
@@ -293,12 +307,11 @@ else:
                 )
 """,
             "",
-            1,
-        )
+        ),
 
         # 7. _get_node_name_for_pod
-        #    Return an empty string; callers (get_node_*) are also replaced.
-        _content = _content.replace(
+        #    Return an empty string; its callers (get_node_*) are also replaced.
+        (
             """        client = Client()
         pod = client.get(
             Pod, name=self._unit_name_to_pod_name(self.unit.name), namespace=self._namespace
@@ -308,12 +321,11 @@ else:
         else:
             raise Exception("Pod doesn't exist")""",
             """        return ""  # k8s API removed""",
-            1,
-        )
+        ),
 
         # 8. get_resources_limits
         #    Return empty dict (no container resource limits known).
-        _content = _content.replace(
+        (
             """        client = Client()
         pod = client.get(
             Pod, self._unit_name_to_pod_name(self.unit.name), namespace=self._namespace
@@ -325,47 +337,36 @@ else:
                     return container.resources.limits or {}
         return {}""",
             """        return {}  # k8s API removed""",
-            1,
-        )
+        ),
 
         # 9. get_node_allocable_memory
-        #    Return a 4 GiB default.  Tune via charm config (profile_limit_memory)
-        #    or PostgreSQL parameters if the actual node has less memory.
-        _content = _content.replace(
+        #    Return a 4 GiB default.  Tune via profile_limit_memory charm config
+        #    or explicit memory_* config options if needed.
+        (
             """        client = Client()
         node = client.get(Node, name=self._get_node_name_for_pod(), namespace=self._namespace)  # type: ignore
         return any_memory_to_bytes(node.status.allocatable["memory"])""",
             """        return 4 * 1024 * 1024 * 1024  # k8s API removed; 4 GiB default""",
-            1,
-        )
+        ),
 
         # 10. get_node_cpu_cores
         #     Return a 4-core default.
-        _content = _content.replace(
+        (
             """        client = Client()
         node = client.get(Node, name=self._get_node_name_for_pod(), namespace=self._namespace)  # type: ignore
         return any_cpu_to_cores(node.status.allocatable["cpu"])""",
             """        return 4  # k8s API removed; 4-core default""",
-            1,
-        )
-
-        if _content != _original:
-            charm_write(_path, _content)
-            log("patched " + _path)
-        else:
-            log("WARNING: no changes made to " + _path + " – version mismatch?")
+        ),
+    ])
 
     # ──────────────────────────────────────────────────────────────────────────
     # src/backups.py
     # ──────────────────────────────────────────────────────────────────────────
-    _path = "src/backups.py"
-    if charm_exists(_path):
-        _content = charm_read(_path).decode("utf-8")
-        _original = _content
+    patch_file("src/backups.py", [
 
-        # _on_restore_action – skip deleting Patroni DCS Endpoints before restore.
-        # Patroni will re-initialise the cluster from the backup regardless.
-        _content = _content.replace(
+        # _on_restore_action – skip deleting Patroni DCS Endpoints before
+        # restore.  Patroni will re-initialise the cluster from the backup.
+        (
             """        logger.info("Removing previous cluster information")
         try:
             client = Client()
@@ -388,26 +389,17 @@ else:
                 self._restart_database()
                 return""",
             """        logger.info("Removing previous cluster information (k8s API removed - no-op)")""",
-            1,
-        )
-
-        if _content != _original:
-            charm_write(_path, _content)
-            log("patched " + _path)
-        else:
-            log("WARNING: no changes made to " + _path + " – version mismatch?")
+        ),
+    ])
 
     # ──────────────────────────────────────────────────────────────────────────
     # src/relations/async_replication.py
     # ──────────────────────────────────────────────────────────────────────────
-    _path = "src/relations/async_replication.py"
-    if charm_exists(_path):
-        _content = charm_read(_path).decode("utf-8")
-        _original = _content
+    patch_file("src/relations/async_replication.py", [
 
         # _remove_previous_cluster_information – skip deleting old Patroni DCS
-        # Service/Endpoints objects when switching to standby-cluster mode.
-        _content = _content.replace(
+        # Service/Endpoints when switching to standby-cluster mode.
+        (
             """        client = Client()
         for values in itertools.product(
             [Endpoints, Service],
@@ -430,11 +422,12 @@ else:
                     raise e
                 logger.debug(f"{values[0]} {values[1]} not found")""",
             """        pass  # k8s API removed""",
-            1,
-        )
+        ),
+    ])
 
-        if _content != _original:
-            charm_write(_path, _content)
-            log("patched " + _path)
-        else:
-            log("WARNING: no changes made to " + _path + " – version mismatch?")
+
+if "postgresql-k8s" not in charm_url:
+    log("skipping: charm_url does not contain 'postgresql-k8s'")
+else:
+    log("applying no-k8s-api patch to " + charm_url)
+    patch_postgresql_k8s()
