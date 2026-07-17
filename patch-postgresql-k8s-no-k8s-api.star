@@ -451,3 +451,36 @@ if "postgresql-k8s" not in charm_url:
 else:
     log("applying no-k8s-api patch to " + charm_url)
     patch_postgresql_k8s()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # src/charm.py – switch Patroni DCS from Kubernetes to Raft
+    # ──────────────────────────────────────────────────────────────────────────
+    # Patroni reads PATRONI_KUBERNETES_* env vars and loads the k8s DCS backend,
+    # which requires a kubeconfig or in-cluster service-account token.
+    # Replace those four vars with PATRONI_RAFT_* so Patroni uses its built-in
+    # Raft consensus instead.  Raft is fully self-contained: the units talk
+    # directly to each other on port 5010 using the same peer IPs the charm
+    # already tracks in self._endpoints.
+    patch_file("src/charm.py", [
+        (
+            """                        "PATRONI_KUBERNETES_LABELS": f"{{{application: patroni, cluster-name: {self.cluster_name}}}}",
+                        "PATRONI_KUBERNETES_LEADER_LABEL_VALUE": "primary",
+                        "PATRONI_KUBERNETES_NAMESPACE": self._namespace,
+                        "PATRONI_KUBERNETES_USE_ENDPOINTS": "true",""",
+            """                        "PATRONI_RAFT_SELF_ADDR": f"{self._endpoint}:5010",
+                        "PATRONI_RAFT_PARTNER_ADDRS": ",".join(
+                            f"{ep}:5010" for ep in self._endpoints if ep != self._endpoint
+                        ),""",
+        ),
+    ])
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # templates/patroni.yml.j2 – remove Kubernetes-DCS-specific config keys
+    # ──────────────────────────────────────────────────────────────────────────
+    # bypass_api_service: instructs Patroni to bypass the Kubernetes API service
+    # use_endpoints:      instructs Patroni to use Endpoints objects as its DCS
+    # Both are meaningless (and harmful) when using Raft DCS.
+    patch_file("templates/patroni.yml.j2", [
+        ("bypass_api_service: true\n", ""),
+        ("use_endpoints: true\n", ""),
+    ])
