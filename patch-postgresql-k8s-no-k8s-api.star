@@ -463,7 +463,7 @@ else:
     # already tracks in self._endpoints.
     patch_file("src/charm.py", [
         (
-            """                        "PATRONI_KUBERNETES_LABELS": f"{{{application: patroni, cluster-name: {self.cluster_name}}}}",
+            """                        "PATRONI_KUBERNETES_LABELS": f"{{application: patroni, cluster-name: {self.cluster_name}}}",
                         "PATRONI_KUBERNETES_LEADER_LABEL_VALUE": "primary",
                         "PATRONI_KUBERNETES_NAMESPACE": self._namespace,
                         "PATRONI_KUBERNETES_USE_ENDPOINTS": "true",""",
